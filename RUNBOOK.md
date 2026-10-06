@@ -1,49 +1,77 @@
-# Runbook: Deployment Verification with Aqua as the administrator
+# Runbook: the Aqua smoke test (Deployment Verification run by Aqua)
 
-This runbook is for the person who runs the test, called the **operator**. The **deployment-verification**
-skill (`SKILL.md`) makes Aqua the administrator:
-- Aqua creates the test capsules from public fixture repositories, runs every step it can, checks
-  each pass rule, records the evidence and keeps a checklist report.
-- You approve the costly or irreversible steps and do the few clicks Aqua has no tool for.
+**Goal:** an admin types **`run the smoke test`** into Aqua, walks away, and comes back to a dated report.
+
+The **deployment-verification** skill (`SKILL.md`) makes Aqua run the automated part of the
+official Deployment Verification checklist end to end, without stopping to ask:
+- CPU and GPU runs on Flex and dedicated machines;
+- the cloud workstation lifecycle;
+- a Git commit;
+- internal and external data assets;
+- a pipeline;
+- a new release version.
 
 The checklist is the official one: docs.codeocean.com > Admin Guide > Deployment Guide >
-Deployment Verification (8 sections, 28 items).
+Deployment Verification. The few checks that need a person are listed as **manual checks** in
+every report.
 
-## 1. Before you start
+## 1. What a run does
 
-| Need | Why | Who arranges it |
+1. Aqua reads the smoke-test config and makes sure the fixed `DV-smoke-*` objects exist, creating
+   any that are missing.
+2. It runs the checks:
+   - CPU on Flex and dedicated;
+   - GPU on Flex and dedicated (if enabled);
+   - data assets, including a read of every byte of the external S3 data;
+   - workstation launch, /scratch, data asset, result asset, hold, resume and shutdown;
+   - Git commit;
+   - the pipeline;
+   - a new release version (if enabled).
+3. It writes `reports/DV-smoke-<YYYYMMDD-HHMM>.md` and `reports/latest.md` in the capsule
+   `DV-smoke-report`, and replies with a summary line:
+   `SMOKE TEST COMPLETE: 18 PASS, 0 FAIL, 0 BLOCKED, 0 SKIPPED; 9 manual checks open.`
+
+If Aqua can't finish in one turn, its reply ends with `SMOKE TEST INCOMPLETE … Say "continue the
+smoke test" to resume.` The CLI driver in §5 does that for you.
+
+**What each run creates:**
+- three small data assets (a result asset, a linked S3 asset and a workstation result), tagged `dv-smoke`;
+- runs and commits in the fixed capsules;
+- one new version of the release target (if releases are enabled).
+
+Aqua never deletes or archives anything.
+
+**Cost per run:**
+- CPU runs: less than a cent each.
+- Dedicated CPU machine and workstations: a few cents.
+- GPU runs (if enabled): cents to tens of cents, depending on the GPU type.
+
+## 2. One-time setup per deployment
+
+| Step | Who | What |
 |---|---|---|
-| A tester account that can create capsules, run Flex, dedicated and GPU machines, create data assets, run pipelines and release capsules | Aqua acts as this user | admin |
-| **Admin Panel > Aqua > Enable Skills** turned on | the skill must be in Aqua's catalog | admin |
-| The deployment can reach `github.com` | Aqua copies the fixtures and the skill from GitHub. If it can't, mirror the four repositories internally and pass `fixtures: <mirror base URL>` | admin / network |
-| A **second user** | §6 Sharing needs someone else to edit the capsule | operator |
-| A Git repository the tester can push to, made from [aqua-dv-git-sync-template](https://github.com/codeocean-nate/aqua-dv-git-sync-template) (**Use this template**; private is fine) | §3 Git commit and Git Sync | operator |
-| A GitHub credential in the tester's **Account > Credentials** that can read and write that repository | Clone from Git and Git Sync use it | tester |
-| An existing pipeline the tester may run | §5 Pipelines | operator |
-| An AWS IAM role, selectable in Pipeline Settings, that can read the external S3 data | §5.2 external data in a pipeline | admin |
-| An S3 location for the external data asset. The default is the public sample `s3://codeocean-public-data/genomes/saccharomyces_genome`; use your own private bucket to test private access | §4.2 | operator |
+| 1 | admin | Turn on **Admin Panel > Aqua > Enable Skills**. Give the tester account rights to create capsules, run Flex, dedicated and GPU machines, create data assets, run pipelines and release capsules. |
+| 2 | tester | Install the skill: paste the prompt in §3 into a new Aqua chat. |
+| 3 | tester | Run `run the smoke test` once. Aqua creates `DV-smoke-report` with a `config.md` (GPU and releases **off**, Git and pipeline not set), creates the fixed capsules, and runs the CPU, data asset and workstation checks. |
+| 4 | tester | Edit `config.md` in `DV-smoke-report`, or tell Aqua, for example "in the smoke test config set gpu: yes and release: yes". See §4. |
+| 5 | tester | For Git: make a private repo from [aqua-dv-git-sync-template](https://github.com/codeocean-nate/aqua-dv-git-sync-template) (**Use this template**). Make sure the tester's **Account > Credentials** GitHub token can read and write it. Put its URL in `git_repo`. |
+| 6 | admin or tester | Build the smoke-test pipeline once, as below, and put its ID in `pipeline`. |
 
-**Cost:**
-- Every CPU run takes seconds and costs less than a cent on Flex.
-- The dedicated CPU machine and the cloud workstations cost a few cents.
-- The two GPU runs cost cents to tens of cents, depending on the GPU type.
-- Aqua asks before each GPU step and before releasing.
+**Building the pipeline once.** Aqua can't create pipelines or change their credentials.
+1. In the Pipeline builder, add one capsule step: `DV-smoke-cpu`, with the argument `--require-data 1`.
+2. Add the data assets `DV-smoke-data-internal` and `DV-smoke-data-s3`, which Aqua made at setup, and connect both to the step.
+3. In Pipeline Settings:
+   - set cache to **off** ("Run without cache");
+   - pick an **AWS IAM role** that can read `s3_external`. External data in a pipeline needs a non-default role.
+4. Don't use a step capsule that needs a secret. A missing secret makes Aqua's run fail with "missing required credentials".
 
-## 2. The four repositories
+If github.com is blocked from the deployment, mirror the four repos to an internal Git server and set
+`fixtures: <mirror base URL>`. Install the skill from the mirror, or paste `SKILL.md` into a new
+skill by hand.
 
-| Repository | Used for |
-|---|---|
-| [aqua-dv-skill](https://github.com/codeocean-nate/aqua-dv-skill) | this runbook and `SKILL.md` |
-| [aqua-dv-cpu-capsule](https://github.com/codeocean-nate/aqua-dv-cpu-capsule) | CPU runs, data asset reads, cloud workstations, the pipeline step, releases |
-| [aqua-dv-gpu-capsule](https://github.com/codeocean-nate/aqua-dv-gpu-capsule) | GPU runs on Flex and dedicated machines |
-| [aqua-dv-git-sync-template](https://github.com/codeocean-nate/aqua-dv-git-sync-template) | template for your writable Git repository |
+## 3. Install the skill
 
-The fixtures print nothing secret and need no network. The CPU check reads every byte of every file
-under `/data` and prints its SHA-256, so data access is proven, not just listed.
-
-## 3. Install the skill (once per deployment)
-
-Paste this into a **new** Aqua chat:
+Paste into a **new** Aqua chat:
 
 ```text
 Create a new skill by copying the contents of this Git repository: https://github.com/codeocean-nate/aqua-dv-skill
@@ -55,118 +83,83 @@ Create an independent skill that is not linked to the Git repository. Copy only 
 When it's done, re-read the new skill's SKILL.md and check it against the SKILL.md rules. Don't ask me any questions. Reply with the skill's name and its full https URL.
 ```
 
-Check that the skill shows as **enabled** on the Skills page. A skill you create is enabled for you;
-a skill someone shares with you stays disabled until you enable it.
+A skill you create is enabled for you. Others must enable it on their Skills page.
 
-## 4. Start the test
+**To update** to a newer version, ask Aqua to replace the skill's `SKILL.md` with the one from this
+repository. Give it the skill's UUID: Aqua can't find a skill by its name or by its `/capsule/` URL.
 
-In a **new** chat (keep using this chat for the whole test), paste the following, after filling in
-the values:
+## 4. The config (`config.md` in `DV-smoke-report`)
 
-```text
-Run the Code Ocean deployment verification test on this deployment, using the deployment-verification skill. Follow its rules exactly.
-Inputs:
-- gpu: yes
-- git_repo: https://github.com/<your-org>/<repo-made-from-the-template>
-- s3_external: s3://codeocean-public-data/genomes/saccharomyces_genome
-- s3_private: no
-- pipeline: <pipeline ID or URL>
-- second_user: <their username>
-- release: yes
-- pre-approved: none
-Start with section 0 and keep going until you reach a gate, an operator step or the end. Ask in plain text only.
-```
-
-Aqua works through the sections in this order: 0 Preflight, 1 Reproducible Runs, 4 Data assets,
-2 Cloud workstations, 3 Git, 5 Pipelines, 6 Sharing, 7 Releases, 8 Aqua, then Wrap-up. Section 4 comes
-before 2 because the workstation test needs the result data asset.
-
-## 5. Answer gates and do the operator steps
-
-- **Gate:** Aqua writes `GATE <id>: …` and stops. Reply `GO <id>` or `SKIP <id>`. You can approve
-  several up front, for example `pre-approved: RR-2, REL-1`.
-- **Operator step:** Aqua gives numbered instructions and stops. Do them, then reply
-  `DONE <id>`, adding anything it asked for, such as a commit SHA.
-
-| Id | You do | Then Aqua |
+| Key | Meaning | Default |
 |---|---|---|
-| P-1 | Tell Aqua the Code Ocean version (from the release notes or your admin) | records it |
-| RR-1.1, RR-2.1 | In the empty capsule Aqua made, click **Start with Sample Files** | lists the files and runs it |
-| GIT-2 | Open `DV-<date>-git`, click **Sync with GitHub**, then copy the commit SHA from GitHub | records the SHA |
-| PL-0 | In Pipeline Settings: cache off ("Run without cache"); only internal data attached | runs PL-1 |
-| PL-2 | Attach the external data asset `DV-<date>-s3-linked` to the pipeline and pick the IAM role | runs PL-2 |
-| SH-1 | Share `DV-<date>-cpu` with the second user as **Editor** (Share Assets off) | waits |
-| SH-1.1 | The second user clicks **Start editing**, appends a line to `code/DV-sharing-check.md`, saves, and leaves the tab open | waits |
-| SH-1.2 | You click **Start editing** (taking control), append a line, commit, and click **Finish editing** | checks that both lines are in the file |
-| AQ-1..3 | Ask the three Aqua questions, each in its **own new chat** | gives you the pass rules |
+| `gpu` | `yes` = run the GPU checks every time. Setting it is the admin's approval. | `no` |
+| `release` | `yes` = release a **new version** of `release_target` every time. Irreversible; only an admin can delete releases. | `no` |
+| `git_repo` | a repo the tester can push to, made from the template | `none` |
+| `pipeline` | ID of the smoke-test pipeline | `none` |
+| `release_target` | an existing capsule to release new versions of; if `none`, Aqua creates `DV-smoke-release` | `none` |
+| `cpu_capsule`, `gpu_capsule`, `git_capsule` | optional existing capsules to use instead of the `DV-smoke-*` ones | `none` |
+| `s3_external` | S3 location for the external data checks; use your own private bucket to test private access | public sample genome |
+| `cpu_flex`, `cpu_dedicated`, `gpu_flex`, `gpu_dedicated` | machines to run on | the smallest found at setup |
+| `data_asset_metadata` | values for any custom metadata fields your data assets require | `none` |
 
-## 6. Who does each checklist item
+## 5. Run it
 
-| § | Item | Aqua | Operator |
-|---|---|---|---|
-| 1 | RR-1 CPU capsule from a starter; RR-1.2 Flex run; RR-1.3 dedicated run | ✓ | |
-| 1 | RR-1.1 / RR-2.1 Start with Sample Files | creates the capsule, then verifies | one click |
-| 1 | RR-2 GPU capsule; RR-2.2 GPU Flex; RR-2.3 GPU dedicated | ✓ (gated) | approve |
-| 2 | CW-1 to CW-1.6: launch, /scratch, internal data asset, result asset, hold, resume, shut down | ✓ | |
-| 3 | GIT-1 commit | ✓ | |
-| 3 | GIT-2 Git Sync | | one click + SHA |
-| 4 | DA-1 internal result data asset; DA-2 external data asset (with a full read check) | ✓ | |
-| 5 | PL-1 / PL-2 run the pipeline | ✓ | pipeline settings |
-| 6 | SH-1 / SH-1.1 / SH-1.2 sharing | creates and verifies the file | share; two people edit |
-| 7 | REL-1 release, then a new version | ✓ (gated) | approve |
-| 8 | AQ-1 to AQ-3 | | asks in fresh chats |
+**In the web chat.** Type `run the smoke test` and leave. Read the reply, or
+`DV-smoke-report > reports/latest.md`, later. If the reply ends with `SMOKE TEST INCOMPLETE`, type
+`continue the smoke test`.
 
-## 7. Results
-
-Aqua keeps the checklist in `dv-report.md`, inside the capsule `DV-<date>-report`, and commits it after
-every section. Every PASS names its evidence:
-- run numbers and computation IDs;
-- the log lines it checked (`DV-BANNER`, `DV-CHECK OK`, `DV-GPU-CHECK OK`, `DV-DATA … unreadable=0`);
-- data asset IDs and provenance.
-
-At the end it replies with the full checklist and every object it created.
-
-**Check Aqua's work.** Open two or three of the runs it cites and confirm the log lines are there.
-Aqua is the administrator, not the auditor.
-
-## 8. Using the Aqua CLI instead of the web chat
-
-The Aqua CLI sends one prompt and prints Aqua's final reply. It's handy for a scripted, logged run.
-1. Get it from `https://get.codeocean.com/aqua-cli/`.
-2. Set `CODEOCEAN_DOMAIN` and `CODEOCEAN_TOKEN`, an API key from Account > Access Tokens.
-3. Keep one session for the whole test:
+**Unattended from the Aqua CLI,** for example nightly or after an upgrade. Use
+[`tools/run-smoke-test.sh`](tools/run-smoke-test.sh). It sends `run the smoke test`, repeats
+`continue the smoke test` in the same session until Aqua reports `SMOKE TEST COMPLETE` (up to
+`MAX_TURNS`), and saves every reply.
 
 ```bash
-SESSION=$(aqua -json "$(cat kickoff.txt)" | tee 01.json | jq -r .session_id)
-jq -r .reply 01.json
-aqua -session "$SESSION" "GO RR-2" | tee 02.txt
-aqua -session "$SESSION" "DONE GIT-2 commit 1a2b3c4" | tee 03.txt
+# the Aqua CLI: https://get.codeocean.com/aqua-cli/
+export CODEOCEAN_DOMAIN=https://<your-deployment>
+export CODEOCEAN_TOKEN=<API key from Account > Access Tokens>
+AQ_CHECKS=1 ./tools/run-smoke-test.sh      # exit 0 = complete; replies in ./smoke-<time>/
 ```
 
-- If Aqua shows an interactive form, the CLI exits with an error. Reply in the same session with
-  `Ask in plain text, not a form` and the CLI will work again.
-- The CLI acts with your API key's permissions.
-- Don't paste keys into prompts. Run `aqua -h` only in a shell where `CODEOCEAN_TOKEN` isn't set,
-  because help output shows default values.
-- Ask the three §8 questions with **separate** `aqua` calls, without `-session`, so each gets a
-  fresh chat.
+- `AQ_CHECKS=1` also asks two of the three §8 Aqua questions in fresh sessions and saves the
+  answers for a person to grade.
+- The CLI acts with that API key's permissions.
+- Run `aqua -h` only in a shell where `CODEOCEAN_TOKEN` isn't set, because help output shows default
+  values.
 
-## 9. Troubleshooting
+## 6. Manual checks (not automated; every report lists them)
 
-| Symptom | Likely cause and fix |
+| Id | What a person does |
 |---|---|
-| Clone from Git says "Cannot connect to repo" | The GitHub credential in Account > Credentials is missing, expired or has no access to the repository. A capsule already linked to GitHub says "credentials are no longer valid". |
-| A run or push is blocked by uncommitted changes | Ask Aqua to commit. Capsules Aqua creates start with uncommitted environment changes. |
-| Aqua can't edit or commit | A cloud workstation is holding the capsule. Ask Aqua to shut it down first. |
-| A pipeline won't start: "Cannot Access External Data Assets" | External data in a pipeline needs a non-default IAM role, chosen in Pipeline Settings. |
-| The GPU step fails with `DV-GPU-CHECK FAIL reason=…` | The reason says what's missing: no GPU visible, no CUDA, or no PyTorch. It is a real failure. |
-| The skill is never used | It's disabled for you, or it's invalid: check the Skills page. Mention "deployment-verification skill" in the prompt. |
+| RR-1.1, RR-2.1 | In a new empty capsule with a starter environment, click **Start with Sample Files**, and run it once. |
+| GIT-2 | Open `DV-smoke-git`, click **Sync with GitHub**, and check the latest `DV-smoke-…: git check` commit on GitHub. |
+| SH-1 to SH-1.2 | Share `DV-smoke-cpu` with a second user as Editor. They click Start editing, append a line and save. The owner clicks Start editing (taking control), appends a line, commits and clicks Finish editing. |
+| AQ-1 to AQ-3 | In fresh chats, ask "What Capsule am I currently looking at?" with `DV-smoke-cpu` open, "List my 3 most recently accessed Capsules" and "What is a Data Asset?". |
+| version | Note the Code Ocean version from your admin or the release notes. |
 
-## 10. Cleanup (optional)
+## 7. Reading the report
 
-Aqua never deletes or archives anything. Afterwards you can archive:
-- the `DV-<date>-*` capsules;
-- the data assets `DV-<date>-cpu-result`, `DV-<date>-cw-result` and `DV-<date>-s3-linked`;
-- the Git test repository.
+- Each item is PASS, FAIL, BLOCKED or SKIPPED, with its evidence: run numbers, computation IDs, the
+  log lines checked (`DV-BANNER`, `DV-CHECK OK`, `DV-GPU-CHECK OK`, `DV-DATA … unreadable=0`), and
+  data asset IDs.
+- **SETUP** marks fixed objects created during that run. Creating them is also what proves "new
+  capsule from a starter environment".
+- **Spot-check Aqua's work.** Open two or three of the runs it cites and confirm the log lines are
+  there. Aqua is the administrator, not the auditor.
 
-Only an admin can delete a release.
+## 8. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Pipeline: "missing required credentials" | A step capsule needs a secret that isn't set. Use a step without secrets (`DV-smoke-cpu`) or set the secret in the pipeline's settings. |
+| Pipeline: "Cannot Access External Data Assets" | Select a non-default AWS IAM role in Pipeline Settings. |
+| Clone from Git: "Cannot connect to repo" | The GitHub token in Account > Credentials is missing, expired or has no access to the repo. |
+| A run or push is blocked by uncommitted changes | Ask Aqua to commit. Capsules it creates start with uncommitted environment changes. |
+| Aqua can't edit a capsule | A workstation or another editor holds it. Shut the workstation down, or ask the editor to click Finish editing. |
+| `DV-GPU-CHECK FAIL reason=…` | A real failure: no GPU visible, no CUDA, or no PyTorch. Check the GPU starter and machine type. |
+| The CLI exits with an error mid-run | Aqua showed an interactive form. Reply in the same session with `Ask in plain text, not a form`, then `continue the smoke test`. |
+| The skill is never used | It's disabled for you, or invalid. Check the Skills page, and say "smoke test" in the prompt. |
+
+## 9. Cleanup (optional)
+
+Archive old `DV-smoke-<run>-*` data assets (tag `dv-smoke`) when you like. Keep the fixed
+`DV-smoke-*` objects for the next run. Only an admin can delete a release.
